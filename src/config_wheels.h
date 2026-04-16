@@ -1,14 +1,22 @@
 #ifndef _CONFIG_H_
 #define _CONFIG_H_
 
-#define BL_BR_IN1 2  
-#define BL_BR_IN2 4
-#define BL_BR_ENA 15
+#define BL_IN1 2   // addjust it to ur pins 
+#define BL_IN2 4
+#define BL_EN 15
 
+#define FL_IN1 2
+#define FL_IN2 4
+#define FL_EN 15
 
-#define FL_FR_IN1 2   // addjust it to ur pins 
-#define FL_FR_IN2 4
-#define FL_FR_ENA 15
+#define BR_IN1 2
+#define BR_IN2 4
+#define BR_EN 15
+
+#define FR_IN1 2
+#define FR_IN2 4
+#define FR_EN 15
+
 
 #define BL_ENC_A 25
 #define BL_ENC_B 26
@@ -40,8 +48,6 @@ constexpr float Ki_FR = 0.0400f;
 constexpr int PWM_MIN = -240;
 constexpr int PWM_MAX = 240;
 
-extern float targetRPM_BLBR;
-extern float targetRPM_FLFR;
 
 
 #endif

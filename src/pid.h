@@ -19,17 +19,32 @@ private:
     float integral_;
 };
 
+struct MotorConfig {
+    int EN_pin;
+    int IN1_pin;
+    int IN2_pin;
+    String name;
+    PIController pi;
+    volatile long encoderCount;
+    QueueHandle_t M_queue;
+};
+
+
+
+
+
 void IRAM_ATTR encoderISR_BL();
 void IRAM_ATTR encoderISR_FL();
 void IRAM_ATTR encoderISR_BR();
 void IRAM_ATTR encoderISR_FR();
 
 float countsToRPM(long deltaCount, float dt, int ppr);
-void setMotor_BL_BR(int pwm);
-void setMotor_FL_FR(int pwm);
+void setMotor(int EN_pin,int IN1_pin,int IN2_pin,int pwm);
 
 void apply_pid(void* parameter);
-
-
+extern MotorConfig BL_Motor;
+extern MotorConfig FL_Motor;
+extern MotorConfig BR_Motor;
+extern MotorConfig FR_Motor;
 
 #endif

@@ -2,18 +2,7 @@
 #include <Arduino.h>
 #include "config_wheels.h"
 
-
-volatile long encoderCount_BL = 0;
-volatile long encoderCount_FL = 0;
-volatile long encoderCount_BR = 0;
-volatile long encoderCount_FR = 0;
-
-volatile uint32_t isrCallCount = 0;
-
 portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
-
-float targetRPM_BLBR = 0.0f; // target RPM for BL and BR addjust it to your needs
-float targetRPM_FLFR = 0.0f; // target RPM for FL and FR addjust it to your needs
 
 unsigned long lastTime = 0;
 long lastCount = 0;
@@ -47,37 +36,31 @@ float PIController::update(float target, float measured, float dt) {
 }
 
 
-PIController pi_BLBR((Kp_BL + Kp_BR) * 0.5f, (Ki_BL + Ki_BR) * 0.5f, PWM_MIN, PWM_MAX);
-PIController pi_FLFR((Kp_FL + Kp_FR) * 0.5f, (Ki_FL + Ki_FR) * 0.5f, PWM_MIN, PWM_MAX);
-
-
-
-
 void IRAM_ATTR encoderISR_BL() {
     portENTER_CRITICAL_ISR(&mux);
-    if (digitalRead(BL_ENC_B)) encoderCount_BL--;
-    else                       encoderCount_BL++;
+    if (digitalRead(BL_ENC_B)) BL_Motor.encoderCount--;
+    else                       BL_Motor.encoderCount++;
     portEXIT_CRITICAL_ISR(&mux);
 }
 
 void IRAM_ATTR encoderISR_FL() {
     portENTER_CRITICAL_ISR(&mux);
-    if (digitalRead(FL_ENC_B)) encoderCount_FL--;
-    else                       encoderCount_FL++;
+    if (digitalRead(FL_ENC_B)) FL_Motor.encoderCount--;
+    else                       FL_Motor.encoderCount++;
     portEXIT_CRITICAL_ISR(&mux);
 }
 
 void IRAM_ATTR encoderISR_BR() {
     portENTER_CRITICAL_ISR(&mux);
-    if (digitalRead(BR_ENC_B)) encoderCount_BR--;
-    else                       encoderCount_BR++;
+    if (digitalRead(BR_ENC_B)) BR_Motor.encoderCount--;
+    else                       BR_Motor.encoderCount++;
     portEXIT_CRITICAL_ISR(&mux);
 }
 
 void IRAM_ATTR encoderISR_FR() {
     portENTER_CRITICAL_ISR(&mux);
-    if (digitalRead(FR_ENC_B)) encoderCount_FR--;
-    else                       encoderCount_FR++;
+    if (digitalRead(FR_ENC_B)) FR_Motor.encoderCount--;
+    else                       FR_Motor.encoderCount++;
     portEXIT_CRITICAL_ISR(&mux);
 }
 
@@ -86,51 +69,37 @@ float countsToRPM(long deltaCount, float dt, int ppr) {
 }
 
 
-void setMotor_BL_BR(int pwm)
+void setMotor(int EN_pin,int IN1_pin,int IN2_pin,int pwm)
 {
     pwm = constrain(pwm, PWM_MIN, PWM_MAX);
-    analogWrite(BL_BR_ENA, abs(pwm));
+    analogWrite(EN_pin, abs(pwm));
 
     if (pwm > 0) {
-        digitalWrite(BL_BR_IN1, LOW);
-        digitalWrite(BL_BR_IN2, HIGH);
+        digitalWrite(IN1_pin, LOW);
+        digitalWrite(IN2_pin, HIGH);
     } else if (pwm < 0) {
-        digitalWrite(BL_BR_IN1, HIGH);
-        digitalWrite(BL_BR_IN2, LOW);
+        digitalWrite(IN1_pin, HIGH);
+        digitalWrite(IN2_pin, LOW);
     } else {
-        digitalWrite(BL_BR_IN1, LOW);
-        digitalWrite(BL_BR_IN2, LOW);
+        digitalWrite(IN1_pin, LOW);
+        digitalWrite(IN2_pin, LOW);
     }
 }
 
-void setMotor_FL_FR(int pwm)
-{
-    pwm = constrain(pwm, PWM_MIN, PWM_MAX);
-    analogWrite(FL_FR_ENA, abs(pwm));
-
-    if (pwm > 0) {
-        digitalWrite(FL_FR_IN1, LOW);
-        digitalWrite(FL_FR_IN2, HIGH);
-    } else if (pwm < 0) {
-        digitalWrite(FL_FR_IN1, HIGH);
-        digitalWrite(FL_FR_IN2, LOW);
-    } else {
-        digitalWrite(FL_FR_IN1, LOW);
-        digitalWrite(FL_FR_IN2, LOW);
-    }
-}
-
-void apply_pid(void *pvParameters) {
-    Serial.println("Starting velocity PI control");
-
-    long prevCount_BL = 0;
-    long prevCount_FL = 0;
-    long prevCount_BR = 0;
-    long prevCount_FR = 0;
+void apply_pid(void *passedConfig) {
+    MotorConfig*  motorConfig = (MotorConfig*)passedConfig;
+    PIController pi = motorConfig->pi;
+    QueueHandle_t targetQueue = motorConfig->M_queue;
+    float targetRPM;
+    float measuredRPM;
+    
+    long prevCount = 0;
 
     unsigned long lastTime = millis();
 
     while (true) {
+        xQueueReceive(targetQueue, &targetRPM, pdMS_TO_TICKS(100));
+        
         unsigned long now = millis();
         if (now - lastTime < sampleTimeMs) {
             vTaskDelay(pdMS_TO_TICKS(1));
@@ -140,73 +109,37 @@ void apply_pid(void *pvParameters) {
         float dt = (now - lastTime) / 1000.0f;
         lastTime = now;
 
-        if (dt <= 0.0f) {
-            continue;
-        }
-
-        long countBL, countFL, countBR, countFR;
+        long count;
 
         portENTER_CRITICAL(&mux);
-        countBL = encoderCount_BL;
-        countFL = encoderCount_FL;
-        countBR = encoderCount_BR;
-        countFR = encoderCount_FR;
+        count = motorConfig->encoderCount;
         portEXIT_CRITICAL(&mux);
 
-        long dBL = countBL - prevCount_BL;
-        long dFL = countFL - prevCount_FL;
-        long dBR = countBR - prevCount_BR;
-        long dFR = countFR - prevCount_FR;
+        long dCount = count - prevCount;
+        prevCount = count;
 
-        prevCount_BL = countBL;
-        prevCount_FL = countFL;
-        prevCount_BR = countBR;
-        prevCount_FR = countFR;
 
-        float rpmBL = countsToRPM(dBL, dt, PPR);
-        float rpmFL = countsToRPM(dFL, dt, PPR);
-        float rpmBR = countsToRPM(dBR, dt, PPR);
-        float rpmFR = countsToRPM(dFR, dt, PPR);
+        float measuredRPM = countsToRPM(dCount, dt, PPR);
 
-        float measuredRPM_BLBR = 0.5f * (rpmBL + rpmBR);
-        float measuredRPM_FLFR = 0.5f * (rpmFL + rpmFR);
 
-        if (targetRPM_BLBR == 0) {
-            pi_BLBR.reset();
-        }
-        if (targetRPM_FLFR == 0) {
-            pi_FLFR.reset();
+        if (targetRPM == 0) {
+            pi.reset();
         }
 
-        int pwmBLBR = (int)pi_BLBR.update(targetRPM_BLBR, measuredRPM_BLBR, dt);
-        int pwmFLFR = (int)pi_FLFR.update(targetRPM_FLFR, measuredRPM_FLFR, dt);
+        int pwm = (int)pi.update(targetRPM, measuredRPM, dt);
 
-        if (pwmBLBR != 0 && abs(pwmBLBR) < 40) {    // safe minimum PWM 
-            pwmBLBR = (pwmBLBR > 0) ? 40 : -40;
-        }
-        if (pwmFLFR != 0 && abs(pwmFLFR) < 40) {
-            pwmFLFR = (pwmFLFR > 0) ? 40 : -40;
+        if (pwm != 0 && abs(pwm) < 40) {    // safe minimum PWM 
+            pwm = (pwm > 0) ? 40 : -40;
         }
 
-        setMotor_BL_BR(pwmBLBR);
-        setMotor_FL_FR(pwmFLFR);
+        setMotor(motorConfig->EN_pin, motorConfig->IN1_pin, motorConfig->IN2_pin, pwm);
+        Serial.print(motorConfig->name);
+        Serial.print("-> Target:");
+        Serial.print(targetRPM);
+        Serial.print(" RPM:");
+        Serial.print(measuredRPM);
+        Serial.print(" PWM:");
+        Serial.println(pwm);
 
-        Serial.print("BL:");
-        Serial.print(rpmBL);
-        Serial.print(" BR:");
-        Serial.print(rpmBR);
-        Serial.print(" AVG_R:");
-        Serial.print(measuredRPM_BLBR);
-        Serial.print(" PWM_R:");
-        Serial.print(pwmBLBR);
-
-        Serial.print(" | FL:");
-        Serial.print(rpmFL);
-        Serial.print(" FR:");
-        Serial.print(rpmFR);
-        Serial.print(" AVG_F:");
-        Serial.print(measuredRPM_FLFR);
-        Serial.print(" PWM_F:");
-        Serial.println(pwmFLFR);
     }
 }

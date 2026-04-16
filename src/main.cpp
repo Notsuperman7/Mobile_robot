@@ -2,17 +2,88 @@
 #include "pid.h"
 #include "config_wheels.h"
 
+
+PIController pi_BL((Kp_BL) , (Ki_BL) , PWM_MIN, PWM_MAX);
+PIController pi_FL((Kp_FL) , (Ki_FL) , PWM_MIN, PWM_MAX);
+PIController pi_BR((Kp_BR) , (Ki_BR) , PWM_MIN, PWM_MAX);
+PIController pi_FR((Kp_FR) , (Ki_FR) , PWM_MIN, PWM_MAX);
+
+
+QueueHandle_t BR_target_queue;
+QueueHandle_t FR_target_queue;
+QueueHandle_t BL_target_queue;
+QueueHandle_t FL_target_queue;
+
+typedef struct MotorConfig MotorConfig;
+
+MotorConfig BL_Motor = {
+    .EN_pin = BL_EN,
+    .IN1_pin = BL_IN1,
+    .IN2_pin = BL_IN2,
+    .name = "BL",
+    .pi = pi_BL,
+    .encoderCount = 0,
+    .M_queue = BL_target_queue
+};
+
+MotorConfig FL_Motor = {
+    .EN_pin = FL_EN,
+    .IN1_pin = FL_IN1,
+    .IN2_pin = FL_IN2,
+    .name = "FL",
+    .pi = pi_FL,
+    .encoderCount = 0,
+    .M_queue = FL_target_queue
+};
+
+MotorConfig BR_Motor = {
+    .EN_pin = BR_EN,
+    .IN1_pin = BR_IN1,
+    .IN2_pin = BR_IN2,
+    .name = "BR",
+    .pi = pi_BR,
+    .encoderCount = 0,
+    .M_queue = BR_target_queue
+};
+
+MotorConfig FR_Motor = {
+    .EN_pin = FR_EN,
+    .IN1_pin = FR_IN1,
+    .IN2_pin = FR_IN2,
+    .name = "FR",
+    .pi = pi_FR,
+    .encoderCount = 0,
+    .M_queue = FR_target_queue
+};
+void startMotors(void* pvprm) {
+    while(true){
+    xQueueSend(BR_target_queue, (void*)(60), 0);
+    xQueueSend(FR_target_queue, (void*)(60), 0);
+    xQueueSend(BL_target_queue, (void*)(60), 0);
+    xQueueSend(FL_target_queue, (void*)(60), 0);
+    delay(100);
+    };
+}
+
 void setup() {
     Serial.begin(115200);
 
     // Motor pins
-    pinMode(BL_BR_IN1, OUTPUT);
-    pinMode(BL_BR_IN2, OUTPUT);
-    pinMode(BL_BR_ENA, OUTPUT);
+    pinMode(BL_IN1, OUTPUT);
+    pinMode(BL_IN2, OUTPUT);
+    pinMode(BL_EN, OUTPUT);
 
-    pinMode(FL_FR_IN1, OUTPUT);
-    pinMode(FL_FR_IN2, OUTPUT);
-    pinMode(FL_FR_ENA, OUTPUT);
+    pinMode(FL_IN1, OUTPUT);
+    pinMode(FL_IN2, OUTPUT);
+    pinMode(FL_EN, OUTPUT);
+
+    pinMode(BR_IN1, OUTPUT);
+    pinMode(BR_IN2, OUTPUT);
+    pinMode(BR_EN, OUTPUT);
+
+    pinMode(FR_IN1, OUTPUT);
+    pinMode(FR_IN2, OUTPUT);
+    pinMode(FR_EN, OUTPUT);
 
     // Encoder pins
     pinMode(BL_ENC_A, INPUT_PULLUP);
@@ -28,8 +99,10 @@ void setup() {
     pinMode(FR_ENC_B, INPUT_PULLUP);
 
     // Stop motors at startup
-    setMotor_BL_BR(0);
-    setMotor_FL_FR(0);
+    setMotor(BL_EN, BL_IN1, BL_IN2, 0);
+    setMotor(FL_EN, FL_IN1, FL_IN2, 0);
+    setMotor(BR_EN, BR_IN1, BR_IN2, 0);
+    setMotor(FR_EN, FR_IN1, FR_IN2, 0);
 
     // Encoder interrupts
     attachInterrupt(digitalPinToInterrupt(BL_ENC_A), encoderISR_BL, RISING);
@@ -38,25 +111,59 @@ void setup() {
     attachInterrupt(digitalPinToInterrupt(FR_ENC_A), encoderISR_FR, RISING);
 
     // Initial targets
-    targetRPM_BLBR = 0.0f;
-    targetRPM_FLFR = 0.0f;
+    BR_target_queue=  xQueueCreate(10, sizeof(float));
+    FR_target_queue=  xQueueCreate(10, sizeof(float));
+    BL_target_queue=  xQueueCreate(10, sizeof(float));
+    FL_target_queue=  xQueueCreate(10, sizeof(float));
+
+    xQueueSend(BR_target_queue, (void*)(0), 0);
+    xQueueSend(FR_target_queue, (void*)(0), 0);
+    xQueueSend(BL_target_queue, (void*)(0), 0);
+    xQueueSend(FL_target_queue, (void*)(0), 0);
 
     // Create PID task
-    xTaskCreatePinnedToCore(
+    xTaskCreate(
         apply_pid,
-        "PID_Task",
+        "BL_Task",
+        4096,
+        (void *)&BL_Motor,
+        1,
+        NULL
+    );
+        xTaskCreate(
+        apply_pid,
+        "FL_Task",
+        4096,
+        (void *)&FL_Motor,
+        1,
+        NULL
+    );
+        xTaskCreate(
+        apply_pid,
+        "BR_Task",
+        4096,
+        (void *)&BR_Motor,
+        1,
+        NULL
+    );
+        xTaskCreate(
+        apply_pid,
+        "FR_Task",
+        4096,
+        (void *)&FR_Motor,
+        1,
+        NULL
+    );
+        xTaskCreate(
+        startMotors,
+        "Start_Motors",
         4096,
         NULL,
-        1,
-        NULL,
-        1
+        2,
+        NULL
     );
 }
 
 void loop() {
-    // Example test
-    targetRPM_BLBR = 50.0f;
-    targetRPM_FLFR = 50.0f;
-
     delay(100);
 }
