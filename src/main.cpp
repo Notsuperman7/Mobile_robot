@@ -23,7 +23,7 @@ MotorConfig BL_Motor = {
     .name = "BL",
     .pi = pi_BL,
     .encoderCount = 0,
-    .M_queue = BL_target_queue
+    .M_queue = NULL
 };
 
 MotorConfig FL_Motor = {
@@ -33,7 +33,7 @@ MotorConfig FL_Motor = {
     .name = "FL",
     .pi = pi_FL,
     .encoderCount = 0,
-    .M_queue = FL_target_queue
+    .M_queue = NULL
 };
 
 MotorConfig BR_Motor = {
@@ -43,7 +43,7 @@ MotorConfig BR_Motor = {
     .name = "BR",
     .pi = pi_BR,
     .encoderCount = 0,
-    .M_queue = BR_target_queue
+    .M_queue = NULL
 };
 
 MotorConfig FR_Motor = {
@@ -53,16 +53,17 @@ MotorConfig FR_Motor = {
     .name = "FR",
     .pi = pi_FR,
     .encoderCount = 0,
-    .M_queue = FR_target_queue
+    .M_queue = NULL
 };
 void startMotors(void* pvprm) {
-    while(true){
-    xQueueSend(BR_target_queue, (void*)(60), 0);
-    xQueueSend(FR_target_queue, (void*)(60), 0);
-    xQueueSend(BL_target_queue, (void*)(60), 0);
-    xQueueSend(FL_target_queue, (void*)(60), 0);
-    delay(100);
-    };
+    const float targetRPM = 60.0f;
+    while (true) {
+        xQueueSend(BR_target_queue, &targetRPM, 0);
+        xQueueSend(FR_target_queue, &targetRPM, 0);
+        xQueueSend(BL_target_queue, &targetRPM, 0);
+        xQueueSend(FL_target_queue, &targetRPM, 0);
+        delay(100);
+    }
 }
 
 void setup() {
@@ -111,15 +112,15 @@ void setup() {
     attachInterrupt(digitalPinToInterrupt(FR_ENC_A), encoderISR_FR, RISING);
 
     // Initial targets
-    BR_target_queue=  xQueueCreate(10, sizeof(float));
-    FR_target_queue=  xQueueCreate(10, sizeof(float));
-    BL_target_queue=  xQueueCreate(10, sizeof(float));
-    FL_target_queue=  xQueueCreate(10, sizeof(float));
+    BR_target_queue = xQueueCreate(10, sizeof(float));
+    FR_target_queue = xQueueCreate(10, sizeof(float));
+    BL_target_queue = xQueueCreate(10, sizeof(float));
+    FL_target_queue = xQueueCreate(10, sizeof(float));
 
-    xQueueSend(BR_target_queue, (void*)(0), 0);
-    xQueueSend(FR_target_queue, (void*)(0), 0);
-    xQueueSend(BL_target_queue, (void*)(0), 0);
-    xQueueSend(FL_target_queue, (void*)(0), 0);
+    BL_Motor.M_queue = BL_target_queue;
+    FL_Motor.M_queue = FL_target_queue;
+    BR_Motor.M_queue = BR_target_queue;
+    FR_Motor.M_queue = FR_target_queue;
 
     // Create PID task
     xTaskCreate(

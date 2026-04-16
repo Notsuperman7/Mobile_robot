@@ -140,6 +140,7 @@ void apply_pid(void *passedConfig) {
         Serial.print(measuredRPM);
         Serial.print(" PWM:");
         Serial.println(pwm);
+        vTaskDelay(pdMS_TO_TICKS(100));
 
     }
 }
