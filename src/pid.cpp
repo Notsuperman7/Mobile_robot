@@ -91,8 +91,9 @@ void apply_pid(void *passedConfig) {
     float targetRPM;
     float measuredRPM;
     
-    static long prevCount = 0;
-    static float prevError = 0;
+    int pwm;
+    long prevCount = 0;
+    float prevError = 0;
 
     unsigned long lastTime = millis();
 
@@ -126,7 +127,7 @@ void apply_pid(void *passedConfig) {
         }
         
         float error = targetRPM - measuredRPM;
-        int pwm = (int)pi.update(error, prevError, dt);
+        pwm = (int)pi.update(error, prevError, dt);
         prevError = error;
 
  
@@ -137,7 +138,7 @@ void apply_pid(void *passedConfig) {
 
         setMotor(motorConfig->EN_pin, motorConfig->IN1_pin, motorConfig->IN2_pin, pwm);
         motorConfig->currentRPM = measuredRPM;
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(sampleTimeMs));
 
     }
 }
