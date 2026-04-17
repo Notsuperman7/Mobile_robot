@@ -7,7 +7,7 @@ portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
 unsigned long lastTime = 0;
 long lastCount = 0;
 
-constexpr int sampleTimeMs = 300;
+constexpr int sampleTimeMs = 150;
 
 
 PIController::PIController(float kp, float ki, float Kd, float outMin, float outMax)
