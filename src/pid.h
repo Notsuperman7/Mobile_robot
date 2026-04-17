@@ -6,7 +6,7 @@
 
 class PIController {
 public:
-    PIController(float kp = 0.0f, float ki = 0.0f, float outMin = -220.0f, float outMax = 220.0f); //  addjust the default values to your needs
+    PIController(float kp = 0.0f, float ki = 0.0f,float Kd = 0.0f, float outMin = -220.0f, float outMax = 220.0f); //  addjust the default values to your needs
 
     void reset();
     float update(float target, float measured, float dt);
@@ -14,9 +14,11 @@ public:
 private:
     float kp_;
     float ki_;
+    float kd_;
     float outMin_;
     float outMax_;
     float integral_;
+    float derivative_;
 };
 
 struct MotorConfig {
