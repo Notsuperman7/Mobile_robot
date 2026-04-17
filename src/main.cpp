@@ -61,7 +61,7 @@ void startMotors(void* pvprm) {
         xQueueSend(FR_target_queue, &targetRPM, 0);
         xQueueSend(BL_target_queue, &targetRPM, 0);
         xQueueSend(FL_target_queue, &targetRPM, 0);
-        delay(100);
+        delay(50);
     }
 }
 

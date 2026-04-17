@@ -7,7 +7,7 @@ portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
 unsigned long lastTime = 0;
 long lastCount = 0;
 
-constexpr int sampleTimeMs = 100;
+constexpr int sampleTimeMs = 300;
 
 
 PIController::PIController(float kp, float ki, float Kd, float outMin, float outMax)
@@ -90,9 +90,11 @@ void apply_pid(void *passedConfig) {
     QueueHandle_t targetQueue = motorConfig->M_queue;
     float targetRPM;
     float measuredRPM;
-    
-    static long prevCount = 0;
-    static float prevError = 0;
+
+    int pwm;
+
+    long prevCount = 0;
+    float prevError = 0;
 
     unsigned long lastTime = millis();
 
@@ -101,7 +103,7 @@ void apply_pid(void *passedConfig) {
         
         unsigned long now = millis();
         if (now - lastTime < sampleTimeMs) {
-            vTaskDelay(pdMS_TO_TICKS(1));
+            taskYIELD();
             continue;
         }
 
@@ -126,11 +128,17 @@ void apply_pid(void *passedConfig) {
         }
         float error = targetRPM - measuredRPM;
 
-        int pwm = (int)pi.update(error, prevError, dt);
+        
+
+
+            pwm = (int)pi.update(error, prevError, dt);
+
 
         if (pwm != 0 && abs(pwm) < 40) {    // safe minimum PWM 
             pwm = (pwm > 0) ? 40 : -40;
         }
+
+        prevError = error;
 
         setMotor(motorConfig->EN_pin, motorConfig->IN1_pin, motorConfig->IN2_pin, pwm);
         Serial.print(motorConfig->name);
@@ -140,7 +148,7 @@ void apply_pid(void *passedConfig) {
         Serial.print(measuredRPM);
         Serial.print(" PWM:");
         Serial.println(pwm);
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(sampleTimeMs));
 
     }
 }

@@ -33,21 +33,21 @@
 constexpr int PPR = 515;
 
 
-constexpr float Kp_BL =3.9619f;   
-constexpr float Ki_BL = 0.0297f;
-constexpr float Kd_BL = 36.3636f;
+constexpr float Kp_BL =3.9619f*1.5f;   
+constexpr float Ki_BL = 0.0297f*0.0f;
+constexpr float Kd_BL = 36.3636f*0.0f;
 
-constexpr float Kp_FL =4.0198f;   
-constexpr float Ki_FL = 0.0268f;
-constexpr float Kd_FL = 33.3333f;
+constexpr float Kp_FL =4.0198f*1.5f;   
+constexpr float Ki_FL = 0.0268f*0.0f;
+constexpr float Kd_FL = 33.3333f*0.0f;
 
-constexpr float Kp_BR =4.2489f;   
-constexpr float Ki_BR = 0.0283f;
-constexpr float Kd_BR = 33.3333f;
+constexpr float Kp_BR =4.2489f*1.5f;   
+constexpr float Ki_BR = 0.0283f*0.0f;
+constexpr float Kd_BR = 33.3333f*0.0f;
 
-constexpr float Kp_FR =4.0046f;   
-constexpr float Ki_FR = 0.0267f;
-constexpr float Kd_FR = 33.3333f;
+constexpr float Kp_FR =4.0046f*1.5f;   
+constexpr float Ki_FR = 0.0267f*0.0f;
+constexpr float Kd_FR = 33.3333f*0.0f;
 
 constexpr int PWM_MIN = -240;
 constexpr int PWM_MAX = 240;
