@@ -27,6 +27,7 @@ struct MotorConfig {
     PIController pi;
     volatile long encoderCount;
     QueueHandle_t M_queue;
+    float currentRPM;
 };
 
 

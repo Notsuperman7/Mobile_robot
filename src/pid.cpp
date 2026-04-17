@@ -133,13 +133,7 @@ void apply_pid(void *passedConfig) {
         }
 
         setMotor(motorConfig->EN_pin, motorConfig->IN1_pin, motorConfig->IN2_pin, pwm);
-        Serial.print(motorConfig->name);
-        Serial.print("-> Target:");
-        Serial.print(targetRPM);
-        Serial.print(" RPM:");
-        Serial.print(measuredRPM);
-        Serial.print(" PWM:");
-        Serial.println(pwm);
+        motorConfig->currentRPM = measuredRPM;
         vTaskDelay(pdMS_TO_TICKS(100));
 
     }
