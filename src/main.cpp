@@ -24,10 +24,10 @@ rclc_executor_t executor;
 volatile float wheel_targets[4] = {0.0f, 0.0f, 0.0f, 0.0f}; // FL, FR, BL, BR
 SemaphoreHandle_t targets_mutex;
 
-PIController pi_BL((Kp_BL) , (Ki_BL) , PWM_MIN, PWM_MAX);
-PIController pi_FL((Kp_FL) , (Ki_FL) , PWM_MIN, PWM_MAX);
-PIController pi_BR((Kp_BR) , (Ki_BR) , PWM_MIN, PWM_MAX);
-PIController pi_FR((Kp_FR) , (Ki_FR) , PWM_MIN, PWM_MAX);
+PIController pi_BL((Kp_BL) , (Ki_BL) , (Kd_BL), PWM_MIN, PWM_MAX);
+PIController pi_FL((Kp_FL) , (Ki_FL) , (Kd_FL) , PWM_MIN, PWM_MAX);
+PIController pi_BR((Kp_BR) , (Ki_BR) , (Kd_BR), PWM_MIN, PWM_MAX);
+PIController pi_FR((Kp_FR) , (Ki_FR) , (Kd_FR), PWM_MIN, PWM_MAX);
 
 
 QueueHandle_t BR_target_queue;
