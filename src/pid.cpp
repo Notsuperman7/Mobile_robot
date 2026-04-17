@@ -92,7 +92,7 @@ void apply_pid(void *passedConfig) {
     float measuredRPM;
     
     static long prevCount = 0;
-    static long prevError = 0;
+    static float prevError = 0;
 
     unsigned long lastTime = millis();
 
