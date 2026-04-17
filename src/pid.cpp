@@ -10,25 +10,23 @@ long lastCount = 0;
 constexpr int sampleTimeMs = 100;
 
 
-PIController::PIController(float kp, float ki, float outMin, float outMax)
-    : kp_(kp), ki_(ki), outMin_(outMin), outMax_(outMax), integral_(0.0f) {}
+PIController::PIController(float kp, float ki, float Kd, float outMin, float outMax)
+    : kp_(kp), ki_(ki), kd_(Kd),outMin_(outMin), outMax_(outMax), integral_(0.0f) {}
 
 void PIController::reset() {
     integral_ = 0.0f;
 }
 
-float PIController::update(float target, float measured, float dt) {
-    float error = target - measured;
+float PIController::update(float error, float prev_error, float dt) {
+    
     integral_ += error * dt;
+    derivative_ = (error - prev_error) / dt;
 
-    float output = kp_ * error + ki_ * integral_;
 
-    if (output > outMax_) {
-        output = outMax_;
-        if (error > 0) integral_ -= error * dt;
-    } 
-    else if (output < outMin_) {
-        output = outMin_;
+    float output = (kp_ * error) + (ki_ * integral_) + (kd_ * derivative_);
+    output = constrain(output, outMin_, outMax_);
+
+    if ((output > outMax_) || (output < outMin_)) {
         if (error < 0) integral_ -= error * dt;
     }
 
@@ -93,7 +91,8 @@ void apply_pid(void *passedConfig) {
     float targetRPM;
     float measuredRPM;
     
-    long prevCount = 0;
+    static long prevCount = 0;
+    static long prevError = 0;
 
     unsigned long lastTime = millis();
 
@@ -125,8 +124,12 @@ void apply_pid(void *passedConfig) {
         if (targetRPM == 0) {
             pi.reset();
         }
+        
+        float error = targetRPM - measuredRPM;
+        int pwm = (int)pi.update(error, prevError, dt);
+        prevError = error;
 
-        int pwm = (int)pi.update(targetRPM, measuredRPM, dt);
+ 
 
         if (pwm != 0 && abs(pwm) < 40) {    // safe minimum PWM 
             pwm = (pwm > 0) ? 40 : -40;
