@@ -55,7 +55,7 @@ MotorConfig FR_Motor = {
     .M_queue = NULL
 };
 void startMotors(void* pvprm) {
-    const float targetRPM = 50.0f;
+    const float targetRPM = 90.0f;
     while (true) {
         xQueueSend(BR_target_queue, &targetRPM, 0);
         xQueueSend(FR_target_queue, &targetRPM, 0);
