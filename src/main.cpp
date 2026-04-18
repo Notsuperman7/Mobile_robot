@@ -13,8 +13,8 @@
 
 rcl_subscription_t fl_subscriber, fr_subscriber, bl_subscriber, br_subscriber;
 std_msgs__msg__Float32 fl_msg, fr_msg, bl_msg, br_msg;
-rcl_publisher_t encoder_publisher;
-std_msgs__msg__Float32MultiArray encoder_speeds_msg;
+rcl_publisher_t fl_encoder_publisher, fr_encoder_publisher, bl_encoder_publisher, br_encoder_publisher;
+std_msgs__msg__Float32 fl_encoder_msg, fr_encoder_msg, bl_encoder_msg, br_encoder_msg;
 rclc_support_t support;
 rcl_allocator_t allocator;
 rcl_node_t node;
@@ -23,6 +23,10 @@ rclc_executor_t executor;
 // Shared variable for motor target speeds (updated by ROS callback) - one per wheel
 volatile float wheel_targets[4] = {0.0f, 0.0f, 0.0f, 0.0f}; // FL, FR, BL, BR
 SemaphoreHandle_t targets_mutex;
+
+// Shared encoder speeds - protected by mutex for multi-task access
+volatile float encoder_speeds[4] = {0.0f, 0.0f, 0.0f, 0.0f}; // FL, FR, BL, BR
+SemaphoreHandle_t encoder_mutex;
 
 PIController pi_BL((Kp_BL) , (Ki_BL) , (Kd_BL), PWM_MIN, PWM_MAX);
 PIController pi_FL((Kp_FL) , (Ki_FL) , (Kd_FL), PWM_MIN, PWM_MAX);
@@ -80,8 +84,6 @@ MotorConfig FR_Motor = {
 // ROS callback functions for individual wheel speed commands
 void fl_speed_callback(const void *msg_in) {
     const std_msgs__msg__Float32 *msg = (const std_msgs__msg__Float32 *)msg_in;
-    Serial.print("FL received: ");
-    Serial.println(msg->data);
     xSemaphoreTake(targets_mutex, portMAX_DELAY);
     wheel_targets[0] = msg->data; // FL
     xSemaphoreGive(targets_mutex);
@@ -89,8 +91,6 @@ void fl_speed_callback(const void *msg_in) {
 
 void fr_speed_callback(const void *msg_in) {
     const std_msgs__msg__Float32 *msg = (const std_msgs__msg__Float32 *)msg_in;
-    Serial.print("FR received: ");
-    Serial.println(msg->data);
     xSemaphoreTake(targets_mutex, portMAX_DELAY);
     wheel_targets[1] = msg->data; // FR
     xSemaphoreGive(targets_mutex);
@@ -98,8 +98,6 @@ void fr_speed_callback(const void *msg_in) {
 
 void bl_speed_callback(const void *msg_in) {
     const std_msgs__msg__Float32 *msg = (const std_msgs__msg__Float32 *)msg_in;
-    Serial.print("BL received: ");
-    Serial.println(msg->data);
     xSemaphoreTake(targets_mutex, portMAX_DELAY);
     wheel_targets[2] = msg->data; // BL
     xSemaphoreGive(targets_mutex);
@@ -107,8 +105,6 @@ void bl_speed_callback(const void *msg_in) {
 
 void br_speed_callback(const void *msg_in) {
     const std_msgs__msg__Float32 *msg = (const std_msgs__msg__Float32 *)msg_in;
-    Serial.print("BR received: ");
-    Serial.println(msg->data);
     xSemaphoreTake(targets_mutex, portMAX_DELAY);
     wheel_targets[3] = msg->data; // BR
     xSemaphoreGive(targets_mutex);
@@ -116,7 +112,7 @@ void br_speed_callback(const void *msg_in) {
 
 void rosExecutorTask(void* pvprm) {
     while (true) {
-        rclc_executor_spin_some(&executor, RCL_MS_TO_NS(10));
+        rclc_executor_spin_some(&executor, RCL_MS_TO_NS(0));
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
@@ -134,21 +130,46 @@ void startMotors(void* pvprm) {
         xQueueSend(BL_target_queue, &targets[2], 0); // BL
         xQueueSend(BR_target_queue, &targets[3], 0); // BR
 
+        // Update shared encoder speeds with mutex protection
+        xSemaphoreTake(encoder_mutex, portMAX_DELAY);
+        encoder_speeds[0] = FL_Motor.currentRPM;
+        encoder_speeds[1] = FR_Motor.currentRPM;
+        encoder_speeds[2] = BL_Motor.currentRPM;
+        encoder_speeds[3] = BR_Motor.currentRPM;
+        xSemaphoreGive(encoder_mutex);
 
-    encoder_speeds_msg.data.data[0] = FL_Motor.currentRPM;
-    encoder_speeds_msg.data.data[1] = FR_Motor.currentRPM;
-    encoder_speeds_msg.data.data[2] = BL_Motor.currentRPM;
-    encoder_speeds_msg.data.data[3] = BR_Motor.currentRPM;
-    encoder_speeds_msg.data.size = 4;
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
 
-    rcl_ret_t rc = rcl_publish(&encoder_publisher, &encoder_speeds_msg, NULL);
-    (void)rc;
-    vTaskDelay(pdMS_TO_TICKS(100));
+void encoderPublisherTask(void* pvprm) {
+    while (true) {
+        // Read encoder speeds with mutex protection
+        xSemaphoreTake(encoder_mutex, portMAX_DELAY);
+        float fl_rpm = encoder_speeds[0];
+        float fr_rpm = encoder_speeds[1];
+        float bl_rpm = encoder_speeds[2];
+        float br_rpm = encoder_speeds[3];
+        xSemaphoreGive(encoder_mutex);
+
+        // Set message data with current RPM values
+        fl_encoder_msg.data = fl_rpm;
+        fr_encoder_msg.data = fr_rpm;
+        bl_encoder_msg.data = bl_rpm;
+        br_encoder_msg.data = br_rpm;
+
+        // Publish to ROS
+        rcl_publish(&fl_encoder_publisher, &fl_encoder_msg, NULL);
+        rcl_publish(&fr_encoder_publisher, &fr_encoder_msg, NULL);
+        rcl_publish(&bl_encoder_publisher, &bl_encoder_msg, NULL);
+        rcl_publish(&br_encoder_publisher, &br_encoder_msg, NULL);
+        
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 
 void setup() {
-    Serial.begin(115200);
+    Serial.begin(9600);
 
     delay(3000);
 
@@ -207,28 +228,26 @@ void setup() {
 
     // Initialize targets mutex
     targets_mutex = xSemaphoreCreateMutex();
+    
+    // Initialize encoder mutex
+    encoder_mutex = xSemaphoreCreateMutex();
 
     // Initialize micro-ROS
-    Serial.println("Initializing micro-ROS...");
     set_microros_serial_transports(Serial);
     allocator = rcl_get_default_allocator();
     
     // Create init_options
     rcl_ret_t ret = rclc_support_init(&support, 0, NULL, &allocator);
     if (ret != RCL_RET_OK) {
-        Serial.print("rclc_support_init failed: ");
-        Serial.println(ret);
-    } else {
-        Serial.println("rclc_support_init OK");
+        // Support initialization failed, halt
+        while(1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
     }
     
     // Create node
     ret = rclc_node_init_default(&node, "mobile_robot_node", "", &support);
     if (ret != RCL_RET_OK) {
-        Serial.print("rclc_node_init_default failed: ");
-        Serial.println(ret);
-    } else {
-        Serial.println("rclc_node_init OK");
+        // Node initialization failed, halt
+        while(1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
     }
     
     // Create subscribers for each wheel
@@ -256,22 +275,36 @@ void setup() {
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32),
         "/wheel_rear_right_speed");
     
-   // Create publisher for encoder RPMs
+   // Create publishers for individual encoder RPMs
     rclc_publisher_init_default(
-         &encoder_publisher,
+         &fl_encoder_publisher,
         &node,
-         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32MultiArray),
-         "/encoder_speeds");
+         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32),
+         "/fl_encoder_rpm");
     
-    //  Initialize encoder speeds message storage
-     std_msgs__msg__Float32MultiArray__init(&encoder_speeds_msg);
-     rosidl_runtime_c__float32__Sequence__init(&encoder_speeds_msg.data, 4);
-     encoder_speeds_msg.data.size = 4;
+    rclc_publisher_init_default(
+         &fr_encoder_publisher,
+        &node,
+         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32),
+         "/fr_encoder_rpm");
     
-     encoder_speeds_msg.layout.data_offset = 0;
-     encoder_speeds_msg.layout.dim.data = NULL;
-     encoder_speeds_msg.layout.dim.size = 0;
-     encoder_speeds_msg.layout.dim.capacity = 0;
+    rclc_publisher_init_default(
+         &bl_encoder_publisher,
+        &node,
+         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32),
+         "/bl_encoder_rpm");
+    
+    rclc_publisher_init_default(
+         &br_encoder_publisher,
+        &node,
+         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32),
+         "/br_encoder_rpm");
+    
+    // Initialize individual encoder messages
+    std_msgs__msg__Float32__init(&fl_encoder_msg);
+    std_msgs__msg__Float32__init(&fr_encoder_msg);
+    std_msgs__msg__Float32__init(&bl_encoder_msg);
+    std_msgs__msg__Float32__init(&br_encoder_msg);
      //Create executor with 4 subscriptions
     rclc_executor_init(&executor, &support.context, 4, &allocator);
     rclc_executor_add_subscription(&executor, &fl_subscriber, &fl_msg, &fl_speed_callback, ON_NEW_DATA);
@@ -327,6 +360,15 @@ void setup() {
         4096,
         NULL,
         1,
+        NULL
+    );
+    
+    xTaskCreate(
+        encoderPublisherTask,
+        "Encoder_Publisher",
+        4096,
+        NULL,
+        2,
         NULL
     );
 }
