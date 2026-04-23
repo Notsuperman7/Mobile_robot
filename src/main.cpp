@@ -1,12 +1,40 @@
 #include <Arduino.h>
 #include "pid.h"
 #include "config_wheels.h"
+#include <micro_ros_platformio.h>
+#include <stdio.h>
+#include <rcl/rcl.h>
+#include <rcl/error_handling.h>
+#include <rclc/rclc.h>
+#include <rclc/executor.h>
+#include <std_msgs/msg/float32_multi_array.h>
+#include <rosidl_runtime_c/primitives_sequence_functions.h>
 
-PIController pi_BL((Kp_BL) , (Ki_BL) , (Kd_BL), PWM_MIN, PWM_MAX);
-PIController pi_FL((Kp_FL) , (Ki_FL) , (Kd_FL), PWM_MIN, PWM_MAX);
-PIController pi_BR((Kp_BR) , (Ki_BR) , (Kd_BR), PWM_MIN, PWM_MAX);
-PIController pi_FR((Kp_FR) , (Ki_FR) , (Kd_FR), PWM_MIN, PWM_MAX);
+rcl_subscription_t wheel_cmds_subscriber;
+rcl_publisher_t encoder_feedback_publisher;
 
+std_msgs__msg__Float32MultiArray wheel_cmds_msg;
+std_msgs__msg__Float32MultiArray encoder_feedback_msg;
+
+rclc_support_t support;
+rcl_allocator_t allocator;
+rcl_node_t node;
+rclc_executor_t executor;
+
+// Shared variable for motor target speeds (updated by ROS callback)
+// Order: FL, FR, BL, BR
+volatile float wheel_targets[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+SemaphoreHandle_t targets_mutex;
+
+// Shared encoder speeds
+// Order: FL, FR, BL, BR
+volatile float encoder_speeds[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+SemaphoreHandle_t encoder_mutex;
+
+PIController pi_BL((Kp_BL), (Ki_BL), (Kd_BL), PWM_MIN, PWM_MAX);
+PIController pi_FL((Kp_FL), (Ki_FL), (Kd_FL), PWM_MIN, PWM_MAX);
+PIController pi_BR((Kp_BR), (Ki_BR), (Kd_BR), PWM_MIN, PWM_MAX);
+PIController pi_FR((Kp_FR), (Ki_FR), (Kd_FR), PWM_MIN, PWM_MAX);
 
 QueueHandle_t BR_target_queue;
 QueueHandle_t FR_target_queue;
@@ -22,7 +50,8 @@ MotorConfig BL_Motor = {
     .name = "BL",
     .pi = pi_BL,
     .encoderCount = 0,
-    .M_queue = NULL
+    .M_queue = NULL,
+    .currentRPM = 0.0f
 };
 
 MotorConfig FL_Motor = {
@@ -32,7 +61,8 @@ MotorConfig FL_Motor = {
     .name = "FL",
     .pi = pi_FL,
     .encoderCount = 0,
-    .M_queue = NULL
+    .M_queue = NULL,
+    .currentRPM = 0.0f
 };
 
 MotorConfig BR_Motor = {
@@ -42,7 +72,8 @@ MotorConfig BR_Motor = {
     .name = "BR",
     .pi = pi_BR,
     .encoderCount = 0,
-    .M_queue = NULL
+    .M_queue = NULL,
+    .currentRPM = 0.0f
 };
 
 MotorConfig FR_Motor = {
@@ -52,21 +83,87 @@ MotorConfig FR_Motor = {
     .name = "FR",
     .pi = pi_FR,
     .encoderCount = 0,
-    .M_queue = NULL
+    .M_queue = NULL,
+    .currentRPM = 0.0f
 };
-void startMotors(void* pvprm) {
-    const float targetRPM = 90.0f;
+
+// Static buffer for outgoing encoder feedback
+static float encoder_feedback_buffer[4];
+
+void wheel_cmds_callback(const void *msg_in) {
+    const std_msgs__msg__Float32MultiArray *msg =
+        (const std_msgs__msg__Float32MultiArray *)msg_in;
+
+    if (msg == NULL || msg->data.data == NULL || msg->data.size < 4) {
+        return;
+    }
+
+    xSemaphoreTake(targets_mutex, portMAX_DELAY);
+    wheel_targets[0] = msg->data.data[0]; // FL
+    wheel_targets[1] = msg->data.data[1]; // FR
+    wheel_targets[2] = msg->data.data[2]; // BL
+    wheel_targets[3] = msg->data.data[3]; // BR
+    xSemaphoreGive(targets_mutex);
+}
+
+void rosExecutorTask(void *pvprm) {
+    (void)pvprm;
     while (true) {
-        xQueueSend(BR_target_queue, &targetRPM, 0);
-        xQueueSend(FR_target_queue, &targetRPM, 0);
-        xQueueSend(BL_target_queue, &targetRPM, 0);
-        xQueueSend(FL_target_queue, &targetRPM, 0);
-        delay(50);
+        rclc_executor_spin_some(&executor, RCL_MS_TO_NS(10));
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
+void startMotors(void *pvprm) {
+    (void)pvprm;
+    while (true) {
+        float targets[4];
+
+        xSemaphoreTake(targets_mutex, portMAX_DELAY);
+        memcpy(targets, (const void *)wheel_targets, sizeof(targets));
+        xSemaphoreGive(targets_mutex);
+
+        // Send individual wheel targets to motor queues
+        xQueueSend(FL_target_queue, &targets[0], 0); // FL
+        xQueueSend(FR_target_queue, &targets[1], 0); // FR
+        xQueueSend(BL_target_queue, &targets[2], 0); // BL
+        xQueueSend(BR_target_queue, &targets[3], 0); // BR
+
+        // Update shared encoder speeds
+        xSemaphoreTake(encoder_mutex, portMAX_DELAY);
+        encoder_speeds[0] = FL_Motor.currentRPM;
+        encoder_speeds[1] = FR_Motor.currentRPM;
+        encoder_speeds[2] = BL_Motor.currentRPM;
+        encoder_speeds[3] = BR_Motor.currentRPM;
+        xSemaphoreGive(encoder_mutex);
+
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+
+void encoderPublisherTask(void *pvprm) {
+    (void)pvprm;
+    while (true) {
+        xSemaphoreTake(encoder_mutex, portMAX_DELAY);
+        encoder_feedback_buffer[0] = encoder_speeds[0]; // FL
+        encoder_feedback_buffer[1] = encoder_speeds[1]; // FR
+        encoder_feedback_buffer[2] = encoder_speeds[2]; // BL
+        encoder_feedback_buffer[3] = encoder_speeds[3]; // BR
+        xSemaphoreGive(encoder_mutex);
+
+        encoder_feedback_msg.data.data = encoder_feedback_buffer;
+        encoder_feedback_msg.data.size = 4;
+        encoder_feedback_msg.data.capacity = 4;
+
+        rcl_publish(&encoder_feedback_publisher, &encoder_feedback_msg, NULL);
+
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 
 void setup() {
     Serial.begin(115200);
+    delay(3000);
 
     // Motor pins
     pinMode(BL_IN1, OUTPUT);
@@ -110,7 +207,7 @@ void setup() {
     attachInterrupt(digitalPinToInterrupt(FL_ENC_A), encoderISR_FL, RISING);
     attachInterrupt(digitalPinToInterrupt(FR_ENC_A), encoderISR_FR, RISING);
 
-    // Initial targets
+    // Queues
     BR_target_queue = xQueueCreate(10, sizeof(float));
     FR_target_queue = xQueueCreate(10, sizeof(float));
     BL_target_queue = xQueueCreate(10, sizeof(float));
@@ -121,7 +218,75 @@ void setup() {
     BR_Motor.M_queue = BR_target_queue;
     FR_Motor.M_queue = FR_target_queue;
 
-    // Create PID task
+    // Mutexes
+    targets_mutex = xSemaphoreCreateMutex();
+    encoder_mutex = xSemaphoreCreateMutex();
+
+    // micro-ROS transport
+    set_microros_serial_transports(Serial);
+    allocator = rcl_get_default_allocator();
+
+    rcl_ret_t ret = rclc_support_init(&support, 0, NULL, &allocator);
+    if (ret != RCL_RET_OK) {
+        while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
+    }
+
+    ret = rclc_node_init_default(&node, "mobile_robot_node", "", &support);
+    if (ret != RCL_RET_OK) {
+        while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
+    }
+
+    // One subscriber: /wheel_cmds
+    ret = rclc_subscription_init_default(
+        &wheel_cmds_subscriber,
+        &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32MultiArray),
+        "/wheel_cmds");
+    if (ret != RCL_RET_OK) {
+        while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
+    }
+
+    // One publisher: /encoder_feedback
+    ret = rclc_publisher_init_default(
+        &encoder_feedback_publisher,
+        &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32MultiArray),
+        "/encoder_feedback");
+    if (ret != RCL_RET_OK) {
+        while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
+    }
+
+    // Init messages
+    std_msgs__msg__Float32MultiArray__init(&wheel_cmds_msg);
+    std_msgs__msg__Float32MultiArray__init(&encoder_feedback_msg);
+
+    encoder_feedback_msg.data.data = encoder_feedback_buffer;
+    encoder_feedback_msg.data.size = 4;
+    encoder_feedback_msg.data.capacity = 4;
+
+    // Optional: leave layout empty
+    encoder_feedback_msg.layout.dim.data = NULL;
+    encoder_feedback_msg.layout.dim.size = 0;
+    encoder_feedback_msg.layout.dim.capacity = 0;
+    encoder_feedback_msg.layout.data_offset = 0;
+
+    // Executor: one subscription only
+    ret = rclc_executor_init(&executor, &support.context, 1, &allocator);
+    if (ret != RCL_RET_OK) {
+        while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
+    }
+
+    ret = rclc_executor_add_subscription(
+        &executor,
+        &wheel_cmds_subscriber,
+        &wheel_cmds_msg,
+        &wheel_cmds_callback,
+        ON_NEW_DATA);
+    if (ret != RCL_RET_OK) {
+        while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
+    }
+
+    // Create PID tasks
     xTaskCreate(
         apply_pid,
         "BL_Task",
@@ -130,7 +295,8 @@ void setup() {
         1,
         NULL
     );
-        xTaskCreate(
+
+    xTaskCreate(
         apply_pid,
         "FL_Task",
         4096,
@@ -138,7 +304,8 @@ void setup() {
         1,
         NULL
     );
-        xTaskCreate(
+
+    xTaskCreate(
         apply_pid,
         "BR_Task",
         4096,
@@ -146,7 +313,8 @@ void setup() {
         1,
         NULL
     );
-        xTaskCreate(
+
+    xTaskCreate(
         apply_pid,
         "FR_Task",
         4096,
@@ -154,9 +322,28 @@ void setup() {
         1,
         NULL
     );
-        xTaskCreate(
+
+    xTaskCreate(
         startMotors,
         "Start_Motors",
+        4096,
+        NULL,
+        2,
+        NULL
+    );
+
+    xTaskCreate(
+        rosExecutorTask,
+        "ROS_Executor",
+        4096,
+        NULL,
+        1,
+        NULL
+    );
+
+    xTaskCreate(
+        encoderPublisherTask,
+        "Encoder_Publisher",
         4096,
         NULL,
         2,
@@ -165,5 +352,5 @@ void setup() {
 }
 
 void loop() {
-    delay(100);
+    vTaskDelay(pdMS_TO_TICKS(100));
 }
