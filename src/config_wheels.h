@@ -26,8 +26,8 @@
 #define BR_ENC_B 17
 
 // FR = Front Right
-#define FR_IN1 20
-#define FR_IN2 21
+#define FR_IN1 21
+#define FR_IN2 20
 #define FR_EN  47
 
 #define FR_ENC_A 38
