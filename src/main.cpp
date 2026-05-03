@@ -9,6 +9,8 @@
 #include <rclc/executor.h>
 #include <std_msgs/msg/float32_multi_array.h>
 #include <rosidl_runtime_c/primitives_sequence_functions.h>
+#include <rmw_microros/rmw_microros.h>
+
 
 rcl_subscription_t wheel_cmds_subscriber;
 rcl_publisher_t encoder_feedback_publisher;
@@ -157,7 +159,7 @@ void encoderPublisherTask(void *pvprm) {
 
         rcl_publish(&encoder_feedback_publisher, &encoder_feedback_msg, NULL);
 
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
 
@@ -225,6 +227,10 @@ void setup() {
     // micro-ROS transport
     set_microros_serial_transports(Serial);
     allocator = rcl_get_default_allocator();
+
+    while (rmw_uros_ping_agent(100, 1) != RMW_RET_OK) {
+        delay(50);
+    }
 
     rcl_ret_t ret = rclc_support_init(&support, 0, NULL, &allocator);
     if (ret != RCL_RET_OK) {

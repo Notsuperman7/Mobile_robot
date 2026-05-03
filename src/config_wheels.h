@@ -1,34 +1,37 @@
 #ifndef _CONFIG_H_
 #define _CONFIG_H_
 
-#define BL_IN1 18   // addjust it to ur pins 
-#define BL_IN2 19
-#define BL_EN 5
+// BL = Back Left
+#define BL_IN1 4
+#define BL_IN2 5
+#define BL_EN  6
 
-#define FL_IN1 16
-#define FL_IN2 17
-#define FL_EN 4
+#define BL_ENC_A 8
+#define BL_ENC_B 9
 
-#define BR_IN1 32
-#define BR_IN2 33
-#define BR_EN 23
+// FL = Front Left
+#define FL_IN1 7
+#define FL_IN2 15
+#define FL_EN  16
 
-#define FR_IN1 2
-#define FR_IN2 0
-#define FR_EN 15
+#define FL_ENC_A 10
+#define FL_ENC_B 11
 
+// BR = Back Right
+#define BR_IN1 17
+#define BR_IN2 18
+#define BR_EN  21
 
-#define BL_ENC_A 26
-#define BL_ENC_B 25
+#define BR_ENC_A 12
+#define BR_ENC_B 13
 
-#define BR_ENC_A 34
-#define BR_ENC_B 35
+// FR = Front Right
+#define FR_IN1 38
+#define FR_IN2 39
+#define FR_EN  40
 
-#define FL_ENC_A 14
-#define FL_ENC_B 12
-
-#define FR_ENC_A 21
-#define FR_ENC_B 22
+#define FR_ENC_A 14
+#define FR_ENC_B 47
 
 constexpr int PPR = 515;
 
