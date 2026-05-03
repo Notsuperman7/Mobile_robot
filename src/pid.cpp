@@ -121,7 +121,7 @@ void apply_pid(void *passedConfig) {
 
 
         float measuredRPM = countsToRPM(dCount, dt, PPR);
-
+        motorConfig->currentRPM = measuredRPM;
 
         if (targetRPM == 0) {
             pi.reset();

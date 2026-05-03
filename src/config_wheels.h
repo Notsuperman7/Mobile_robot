@@ -6,16 +6,16 @@
 #define BL_IN2 15
 #define BL_EN  6
 
-#define BL_ENC_A 4
-#define BL_ENC_B 5
+#define BL_ENC_A 5
+#define BL_ENC_B 4
 
 // FL = Front Left
 #define FL_IN1 40
 #define FL_IN2 39
 #define FL_EN  41
 
-#define FL_ENC_A 1
-#define FL_ENC_B 2
+#define FL_ENC_A 2
+#define FL_ENC_B 1
 
 // BR = Back Right
 #define BR_IN1 8
@@ -54,7 +54,5 @@ constexpr float Kd_FR = 33.3333f*0.0f;
 
 constexpr int PWM_MIN = -240;
 constexpr int PWM_MAX = 240;
-
-
 
 #endif
