@@ -128,10 +128,11 @@ void apply_pid(void *passedConfig) {
         }
         float error = targetRPM - measuredRPM;
 
-        
+        if(abs(error) < abs(targetRPM) * 0.05f) { // Deadband to prevent oscillations around zero
+            error = 0;
+        }
 
-
-            pwm = (int)pi.update(error, prevError, dt);
+        pwm = (int)pi.update(error, prevError, dt);
 
 
         if (pwm != 0 && abs(pwm) < 40) {    // safe minimum PWM 

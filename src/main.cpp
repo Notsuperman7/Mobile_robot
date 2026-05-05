@@ -133,10 +133,10 @@ void startMotors(void *pvprm) {
         xSemaphoreGive(targets_mutex);
 
         // Send individual wheel targets to motor queues
-        xQueueSend(FL_target_queue, &targets[0], 0); // FL
-        xQueueSend(FR_target_queue, &targets[1], 0); // FR
-        xQueueSend(BL_target_queue, &targets[2], 0); // BL
-        xQueueSend(BR_target_queue, &targets[3], 0); // BR
+        xQueueOverwrite(FL_target_queue, &targets[0]);
+        xQueueOverwrite(FR_target_queue, &targets[1]);
+        xQueueOverwrite(BL_target_queue, &targets[2]);
+        xQueueOverwrite(BR_target_queue, &targets[3]);
 
         // Update shared encoder speeds
         xSemaphoreTake(encoder_mutex, portMAX_DELAY);
@@ -242,7 +242,7 @@ void microRosConnectionTask(void *pvprm) {
                 if (createMicroRosEntities()) {
                     micro_ros_connected = true;
 
-                    xTaskCreate(rosExecutorTask, "ROS_Executor", 8192, NULL, 1, NULL);
+                    xTaskCreate(rosExecutorTask, "ROS_Executor", 8192, NULL, 4, NULL);
                     xTaskCreate(encoderPublisherTask, "Encoder_Publisher", 4096, NULL, 4, NULL);
                 }
             }
@@ -253,7 +253,7 @@ void microRosConnectionTask(void *pvprm) {
 }
 void setup() {
     Serial.begin(921600);
-    delay(3000);
+    delay(100);
 
     // Motor pins
     pinMode(BL_IN1, OUTPUT);
@@ -298,10 +298,10 @@ void setup() {
     attachInterrupt(digitalPinToInterrupt(FR_ENC_A), encoderISR_FR, RISING);
 
     // Queues
-    BR_target_queue = xQueueCreate(10, sizeof(float));
-    FR_target_queue = xQueueCreate(10, sizeof(float));
-    BL_target_queue = xQueueCreate(10, sizeof(float));
-    FL_target_queue = xQueueCreate(10, sizeof(float));
+    BR_target_queue = xQueueCreate(1, sizeof(float));
+    FR_target_queue = xQueueCreate(1, sizeof(float));
+    BL_target_queue = xQueueCreate(1, sizeof(float));
+    FL_target_queue = xQueueCreate(1, sizeof(float));
 
     BL_Motor.M_queue = BL_target_queue;
     FL_Motor.M_queue = FL_target_queue;
@@ -366,7 +366,7 @@ void setup() {
         "Start_Motors",
         4096,
         NULL,
-        3,
+        4,
         NULL
     );
 

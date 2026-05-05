@@ -30,7 +30,7 @@
 #define FR_IN2 20
 #define FR_EN  47
 
-#define FR_ENC_A 38
+#define FR_ENC_A 19
 #define FR_ENC_B 48
 
 constexpr int PPR = 515;
