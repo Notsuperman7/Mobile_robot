@@ -9,7 +9,7 @@ public:
     PIController(float kp = 0.0f, float ki = 0.0f,float Kd = 0.0f, float outMin = -220.0f, float outMax = 220.0f); //  addjust the default values to your needs
 
     void reset();
-    float update(float target, float measured, float dt);
+    float update(float error, float prev_error, float dt);
 
 private:
     float kp_;

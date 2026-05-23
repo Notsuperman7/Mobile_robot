@@ -7,15 +7,15 @@
 #include <rcl/error_handling.h>
 #include <rclc/rclc.h>
 #include <rclc/executor.h>
-#include <std_msgs/msg/float32_multi_array.h>
+#include <std_msgs/msg/int16_multi_array.h>
 #include <rosidl_runtime_c/primitives_sequence_functions.h>
 #include <rmw_microros/rmw_microros.h>
 
 rcl_subscription_t wheel_cmds_subscriber;
 rcl_publisher_t encoder_feedback_publisher;
 
-std_msgs__msg__Float32MultiArray wheel_cmds_msg;
-std_msgs__msg__Float32MultiArray encoder_feedback_msg;
+std_msgs__msg__Int16MultiArray wheel_cmds_msg;
+std_msgs__msg__Int16MultiArray encoder_feedback_msg;
 
 rclc_support_t support;
 rcl_allocator_t allocator;
@@ -24,16 +24,17 @@ rclc_executor_t executor;
 
 
 volatile bool micro_ros_connected = false;
-static float wheel_cmds_buffer[4];
+static int16_t wheel_cmds_buffer[4];
 
 // Order: FL, FR, BL, BR
-volatile float wheel_targets[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+volatile int16_t wheel_targets[4] = {0};
 SemaphoreHandle_t targets_mutex;// Shared variable for motor target speeds (updated by ROS callback)
 
-
+TaskHandle_t ros_executor_handle = NULL;
+TaskHandle_t encoder_pub_handle = NULL;
 // Shared encoder speeds
 // Order: FL, FR, BL, BR
-volatile float encoder_speeds[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+volatile int16_t encoder_speeds[4] = {0};
 SemaphoreHandle_t encoder_mutex;
 
 PIController pi_BL((Kp_BL), (Ki_BL), (Kd_BL), PWM_MIN, PWM_MAX);
@@ -93,13 +94,13 @@ MotorConfig FR_Motor = {
 };
 
 // Static buffer for outgoing encoder feedback
-static float encoder_feedback_buffer[4];
+static int16_t encoder_feedback_buffer[4];
 
 void wheel_cmds_callback(const void *msg_in) {
-    const std_msgs__msg__Float32MultiArray *msg =
-        (const std_msgs__msg__Float32MultiArray *)msg_in;
+    const std_msgs__msg__Int16MultiArray *msg =
+        (const std_msgs__msg__Int16MultiArray *)msg_in;
 
-    if (msg == NULL || msg->data.data == NULL || msg->data.size < 4) {
+    if (msg == NULL || msg->data.data == NULL || msg->data.size < 4|| msg->data.capacity < 4) {
         return;
     }
 
@@ -118,7 +119,7 @@ void rosExecutorTask(void *pvprm) {
     const TickType_t period = pdMS_TO_TICKS(5);
 
     while (true) {
-        rclc_executor_spin_some(&executor, RCL_MS_TO_NS(1));
+        rclc_executor_spin_some(&executor, RCL_MS_TO_NS(5));
         vTaskDelayUntil(&lastWakeTime, period);
     }
 }
@@ -126,10 +127,12 @@ void rosExecutorTask(void *pvprm) {
 void startMotors(void *pvprm) {
     (void)pvprm;
     while (true) {
-        float targets[4];
+        int32_t targets[4];
 
         xSemaphoreTake(targets_mutex, portMAX_DELAY);
-        memcpy(targets, (const void *)wheel_targets, sizeof(targets));
+        for (int i = 0; i < 4; i++) {
+            targets[i] = wheel_targets[i];
+        }
         xSemaphoreGive(targets_mutex);
 
         // Send individual wheel targets to motor queues
@@ -140,10 +143,10 @@ void startMotors(void *pvprm) {
 
         // Update shared encoder speeds
         xSemaphoreTake(encoder_mutex, portMAX_DELAY);
-        encoder_speeds[0] = FL_Motor.currentRPM;
-        encoder_speeds[1] = FR_Motor.currentRPM;
-        encoder_speeds[2] = BL_Motor.currentRPM;
-        encoder_speeds[3] = BR_Motor.currentRPM;
+        encoder_speeds[0] = (int32_t)FL_Motor.currentRPM;
+        encoder_speeds[1] = (int32_t)FR_Motor.currentRPM;
+        encoder_speeds[2] = (int32_t)BL_Motor.currentRPM;
+        encoder_speeds[3] = (int32_t)BR_Motor.currentRPM;
         xSemaphoreGive(encoder_mutex);
 
         vTaskDelay(pdMS_TO_TICKS(10));
@@ -154,7 +157,10 @@ void encoderPublisherTask(void *pvprm) {
     (void)pvprm;
 
     TickType_t lastWakeTime = xTaskGetTickCount();
-    const TickType_t period = pdMS_TO_TICKS(20);  // 50 Hz
+    const TickType_t period = pdMS_TO_TICKS(50);
+    
+    // ADD THIS: A counter to track consecutive failures
+    int consecutive_errors = 0; 
 
     while (true) {
         xSemaphoreTake(encoder_mutex, portMAX_DELAY);
@@ -169,8 +175,17 @@ void encoderPublisherTask(void *pvprm) {
         encoder_feedback_msg.data.capacity = 4;
 
         rcl_ret_t ret = rcl_publish(&encoder_feedback_publisher, &encoder_feedback_msg, NULL);
+        
+        // --- THE UPGRADED SUICIDE BUTTON ---
         if (ret != RCL_RET_OK) {
-            ESP.restart();
+            consecutive_errors++;
+            // If it fails 10 times in a row (0.5 seconds), pull the plug.
+            if (consecutive_errors >= 10) { 
+                ESP.restart();
+            }
+        } else {
+            // If a packet goes through successfully, reset the strike counter!
+            consecutive_errors = 0; 
         }
 
         vTaskDelayUntil(&lastWakeTime, period);
@@ -189,19 +204,19 @@ bool createMicroRosEntities() {
     ret = rclc_subscription_init_default(
         &wheel_cmds_subscriber,
         &node,
-        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32MultiArray),
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int16MultiArray),
         "/wheel_cmds");
     if (ret != RCL_RET_OK) return false;
 
     ret = rclc_publisher_init_default(
         &encoder_feedback_publisher,
         &node,
-        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32MultiArray),
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int16MultiArray),
         "/encoder_feedback");
     if (ret != RCL_RET_OK) return false;
 
-    std_msgs__msg__Float32MultiArray__init(&wheel_cmds_msg);
-    std_msgs__msg__Float32MultiArray__init(&encoder_feedback_msg);
+    std_msgs__msg__Int16MultiArray__init(&wheel_cmds_msg);
+    std_msgs__msg__Int16MultiArray__init(&encoder_feedback_msg);
 
     wheel_cmds_msg.data.data = wheel_cmds_buffer;
     wheel_cmds_msg.data.size = 0;
@@ -242,8 +257,8 @@ void microRosConnectionTask(void *pvprm) {
                 if (createMicroRosEntities()) {
                     micro_ros_connected = true;
 
-                    xTaskCreate(rosExecutorTask, "ROS_Executor", 8192, NULL, 4, NULL);
-                    xTaskCreate(encoderPublisherTask, "Encoder_Publisher", 4096, NULL, 4, NULL);
+                    if (ros_executor_handle == NULL)xTaskCreate(rosExecutorTask, "ROS_Executor", 8192, NULL, 4, &ros_executor_handle);
+                    if (encoder_pub_handle == NULL)xTaskCreate(encoderPublisherTask, "Encoder_Publisher", 4096, NULL, 4, &encoder_pub_handle);
                 }
             }
         }
@@ -298,10 +313,10 @@ void setup() {
     attachInterrupt(digitalPinToInterrupt(FR_ENC_A), encoderISR_FR, RISING);
 
     // Queues
-    BR_target_queue = xQueueCreate(1, sizeof(float));
-    FR_target_queue = xQueueCreate(1, sizeof(float));
-    BL_target_queue = xQueueCreate(1, sizeof(float));
-    FL_target_queue = xQueueCreate(1, sizeof(float));
+    BR_target_queue = xQueueCreate(1, sizeof(int32_t));
+    FR_target_queue = xQueueCreate(1, sizeof(int32_t));
+    BL_target_queue = xQueueCreate(1, sizeof(int32_t));
+    FL_target_queue = xQueueCreate(1, sizeof(int32_t));
 
     BL_Motor.M_queue = BL_target_queue;
     FL_Motor.M_queue = FL_target_queue;
@@ -311,7 +326,11 @@ void setup() {
     // Mutexes
     targets_mutex = xSemaphoreCreateMutex();
     encoder_mutex = xSemaphoreCreateMutex();
-
+    if (targets_mutex == NULL || encoder_mutex == NULL) {
+    while (true) {
+        delay(20);
+    }
+}
     // micro-ROS transport
     set_microros_serial_transports(Serial);
     allocator = rcl_get_default_allocator();
@@ -375,3 +394,4 @@ void setup() {
 void loop() {
     vTaskDelay(pdMS_TO_TICKS(10));
 }
+
