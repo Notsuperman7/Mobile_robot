@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <ESP32Servo.h> // REQUIRED: Add this to your platformio.ini dependencies
 #include "pid.h"
 #include "config_wheels.h"
 #include <micro_ros_platformio.h>
@@ -8,39 +9,42 @@
 #include <rclc/rclc.h>
 #include <rclc/executor.h>
 #include <std_msgs/msg/int16_multi_array.h>
+#include <std_msgs/msg/u_int8.h> // Added for servo topics
 #include <rosidl_runtime_c/primitives_sequence_functions.h>
 #include <rmw_microros/rmw_microros.h>
 
+// --- ROS Entities ---
 rcl_subscription_t wheel_cmds_subscriber;
+rcl_subscription_t gripper_subscriber;
+rcl_subscription_t arm_subscriber;
 rcl_publisher_t encoder_feedback_publisher;
 
 std_msgs__msg__Int16MultiArray wheel_cmds_msg;
 std_msgs__msg__Int16MultiArray encoder_feedback_msg;
+std_msgs__msg__UInt8 gripper_msg;
+std_msgs__msg__UInt8 arm_msg;
 
 rclc_support_t support;
 rcl_allocator_t allocator;
 rcl_node_t node;
 rclc_executor_t executor;
 
-
 volatile bool micro_ros_connected = false;
 static int16_t wheel_cmds_buffer[4];
+static int16_t encoder_feedback_buffer[4];
 
-// Order: FL, FR, BL, BR
-volatile int16_t wheel_targets[4] = {0};
-SemaphoreHandle_t targets_mutex;// Shared variable for motor target speeds (updated by ROS callback)
-
+// --- Task Handles ---
 TaskHandle_t ros_executor_handle = NULL;
 TaskHandle_t encoder_pub_handle = NULL;
-// Shared encoder speeds
-// Order: FL, FR, BL, BR
-volatile int16_t encoder_speeds[4] = {0};
-SemaphoreHandle_t encoder_mutex;
 
+// --- Motor & Servo Objects ---
 PIController pi_BL((Kp_BL), (Ki_BL), (Kd_BL), PWM_MIN, PWM_MAX);
 PIController pi_FL((Kp_FL), (Ki_FL), (Kd_FL), PWM_MIN, PWM_MAX);
 PIController pi_BR((Kp_BR), (Ki_BR), (Kd_BR), PWM_MIN, PWM_MAX);
 PIController pi_FR((Kp_FR), (Ki_FR), (Kd_FR), PWM_MIN, PWM_MAX);
+
+Servo gripper_servo;
+Servo arm_servo;
 
 QueueHandle_t BR_target_queue;
 QueueHandle_t FR_target_queue;
@@ -49,126 +53,61 @@ QueueHandle_t FL_target_queue;
 
 typedef struct MotorConfig MotorConfig;
 
-MotorConfig BL_Motor = {
-    .EN_pin = BL_EN,
-    .IN1_pin = BL_IN1,
-    .IN2_pin = BL_IN2,
-    .name = "BL",
-    .pi = pi_BL,
-    .encoderCount = 0,
-    .M_queue = NULL,
-    .currentRPM = 0.0f
-};
+MotorConfig BL_Motor = { BL_EN, BL_IN1, BL_IN2, "BL", pi_BL, 0, NULL, 0.0f };
+MotorConfig FL_Motor = { FL_EN, FL_IN1, FL_IN2, "FL", pi_FL, 0, NULL, 0.0f };
+MotorConfig BR_Motor = { BR_EN, BR_IN1, BR_IN2, "BR", pi_BR, 0, NULL, 0.0f };
+MotorConfig FR_Motor = { FR_EN, FR_IN1, FR_IN2, "FR", pi_FR, 0, NULL, 0.0f };
 
-MotorConfig FL_Motor = {
-    .EN_pin = FL_EN,
-    .IN1_pin = FL_IN1,
-    .IN2_pin = FL_IN2,
-    .name = "FL",
-    .pi = pi_FL,
-    .encoderCount = 0,
-    .M_queue = NULL,
-    .currentRPM = 0.0f
-};
-
-MotorConfig BR_Motor = {
-    .EN_pin = BR_EN,
-    .IN1_pin = BR_IN1,
-    .IN2_pin = BR_IN2,
-    .name = "BR",
-    .pi = pi_BR,
-    .encoderCount = 0,
-    .M_queue = NULL,
-    .currentRPM = 0.0f
-};
-
-MotorConfig FR_Motor = {
-    .EN_pin = FR_EN,
-    .IN1_pin = FR_IN1,
-    .IN2_pin = FR_IN2,
-    .name = "FR",
-    .pi = pi_FR,
-    .encoderCount = 0,
-    .M_queue = NULL,
-    .currentRPM = 0.0f
-};
-
-// Static buffer for outgoing encoder feedback
-static int16_t encoder_feedback_buffer[4];
-
+// --- Callbacks ---
 void wheel_cmds_callback(const void *msg_in) {
-    const std_msgs__msg__Int16MultiArray *msg =
-        (const std_msgs__msg__Int16MultiArray *)msg_in;
+    const std_msgs__msg__Int16MultiArray *msg = (const std_msgs__msg__Int16MultiArray *)msg_in;
+    if (msg == NULL || msg->data.data == NULL || msg->data.size < 4) return;
 
-    if (msg == NULL || msg->data.data == NULL || msg->data.size < 4|| msg->data.capacity < 4) {
-        return;
-    }
+    int32_t t_FL = msg->data.data[0];
+    int32_t t_FR = msg->data.data[1];
+    int32_t t_BL = msg->data.data[2];
+    int32_t t_BR = msg->data.data[3];
 
-    xSemaphoreTake(targets_mutex, portMAX_DELAY);
-    wheel_targets[0] = msg->data.data[0]; // FL
-    wheel_targets[1] = msg->data.data[1]; // FR
-    wheel_targets[2] = msg->data.data[2]; // BL
-    wheel_targets[3] = msg->data.data[3]; // BR
-    xSemaphoreGive(targets_mutex);
+    xQueueOverwrite(FL_target_queue, &t_FL);
+    xQueueOverwrite(FR_target_queue, &t_FR);
+    xQueueOverwrite(BL_target_queue, &t_BL);
+    xQueueOverwrite(BR_target_queue, &t_BR);
 }
 
+void gripper_callback(const void *msg_in) {
+    const std_msgs__msg__UInt8 *msg = (const std_msgs__msg__UInt8 *)msg_in;
+    // Constrain to safe servo angles
+    int angle = constrain(msg->data, 0, 180);
+    gripper_servo.write(angle);
+}
+
+void arm_callback(const void *msg_in) {
+    const std_msgs__msg__UInt8 *msg = (const std_msgs__msg__UInt8 *)msg_in;
+    // Constrain to safe servo angles
+    int angle = constrain(msg->data, 0, 180);
+    arm_servo.write(angle);
+}
+
+// --- Tasks ---
 void rosExecutorTask(void *pvprm) {
     (void)pvprm;
-
-    TickType_t lastWakeTime = xTaskGetTickCount();
-    const TickType_t period = pdMS_TO_TICKS(5);
-
     while (true) {
-        rclc_executor_spin_some(&executor, RCL_MS_TO_NS(5));
-        vTaskDelayUntil(&lastWakeTime, period);
-    }
-}
-
-void startMotors(void *pvprm) {
-    (void)pvprm;
-    while (true) {
-        int32_t targets[4];
-
-        xSemaphoreTake(targets_mutex, portMAX_DELAY);
-        for (int i = 0; i < 4; i++) {
-            targets[i] = wheel_targets[i];
-        }
-        xSemaphoreGive(targets_mutex);
-
-        // Send individual wheel targets to motor queues
-        xQueueOverwrite(FL_target_queue, &targets[0]);
-        xQueueOverwrite(FR_target_queue, &targets[1]);
-        xQueueOverwrite(BL_target_queue, &targets[2]);
-        xQueueOverwrite(BR_target_queue, &targets[3]);
-
-        // Update shared encoder speeds
-        xSemaphoreTake(encoder_mutex, portMAX_DELAY);
-        encoder_speeds[0] = (int32_t)FL_Motor.currentRPM;
-        encoder_speeds[1] = (int32_t)FR_Motor.currentRPM;
-        encoder_speeds[2] = (int32_t)BL_Motor.currentRPM;
-        encoder_speeds[3] = (int32_t)BR_Motor.currentRPM;
-        xSemaphoreGive(encoder_mutex);
-
+        rclc_executor_spin_some(&executor, RCL_MS_TO_NS(0));
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
 
 void encoderPublisherTask(void *pvprm) {
     (void)pvprm;
-
     TickType_t lastWakeTime = xTaskGetTickCount();
     const TickType_t period = pdMS_TO_TICKS(50);
-    
-    // ADD THIS: A counter to track consecutive failures
-    int consecutive_errors = 0; 
+    int consecutive_errors = 0;
 
     while (true) {
-        xSemaphoreTake(encoder_mutex, portMAX_DELAY);
-        encoder_feedback_buffer[0] = encoder_speeds[0];
-        encoder_feedback_buffer[1] = encoder_speeds[1];
-        encoder_feedback_buffer[2] = encoder_speeds[2];
-        encoder_feedback_buffer[3] = encoder_speeds[3];
-        xSemaphoreGive(encoder_mutex);
+        encoder_feedback_buffer[0] = (int16_t)FL_Motor.currentRPM;
+        encoder_feedback_buffer[1] = (int16_t)FR_Motor.currentRPM;
+        encoder_feedback_buffer[2] = (int16_t)BL_Motor.currentRPM;
+        encoder_feedback_buffer[3] = (int16_t)BR_Motor.currentRPM;
 
         encoder_feedback_msg.data.data = encoder_feedback_buffer;
         encoder_feedback_msg.data.size = 4;
@@ -176,18 +115,12 @@ void encoderPublisherTask(void *pvprm) {
 
         rcl_ret_t ret = rcl_publish(&encoder_feedback_publisher, &encoder_feedback_msg, NULL);
         
-        // --- THE UPGRADED SUICIDE BUTTON ---
         if (ret != RCL_RET_OK) {
             consecutive_errors++;
-            // If it fails 10 times in a row (0.5 seconds), pull the plug.
-            if (consecutive_errors >= 10) { 
-                ESP.restart();
-            }
+            if (consecutive_errors >= 10) ESP.restart();
         } else {
-            // If a packet goes through successfully, reset the strike counter!
-            consecutive_errors = 0; 
+            consecutive_errors = 0;
         }
-
         vTaskDelayUntil(&lastWakeTime, period);
     }
 }
@@ -201,48 +134,51 @@ bool createMicroRosEntities() {
     ret = rclc_node_init_default(&node, "mobile_robot_node", "", &support);
     if (ret != RCL_RET_OK) return false;
 
-    ret = rclc_subscription_init_default(
-        &wheel_cmds_subscriber,
-        &node,
-        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int16MultiArray),
-        "/wheel_cmds");
+    // --- Subscriptions ---
+    ret = rclc_subscription_init_best_effort(
+        &wheel_cmds_subscriber, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int16MultiArray), "/wheel_cmds");
     if (ret != RCL_RET_OK) return false;
 
-    ret = rclc_publisher_init_default(
-        &encoder_feedback_publisher,
-        &node,
-        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int16MultiArray),
-        "/encoder_feedback");
+    ret = rclc_subscription_init_best_effort(
+        &gripper_subscriber, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, UInt8), "/gripper_angle");
     if (ret != RCL_RET_OK) return false;
 
+    ret = rclc_subscription_init_best_effort(
+        &arm_subscriber, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, UInt8), "/arm_angle");
+    if (ret != RCL_RET_OK) return false;
+
+    // --- Publishers ---
+    ret = rclc_publisher_init_best_effort(
+        &encoder_feedback_publisher, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int16MultiArray), "/encoder_feedback");
+    if (ret != RCL_RET_OK) return false;
+
+    // --- Init Messages ---
     std_msgs__msg__Int16MultiArray__init(&wheel_cmds_msg);
     std_msgs__msg__Int16MultiArray__init(&encoder_feedback_msg);
-
+    
     wheel_cmds_msg.data.data = wheel_cmds_buffer;
     wheel_cmds_msg.data.size = 0;
     wheel_cmds_msg.data.capacity = 4;
-    wheel_cmds_msg.layout.dim.data = NULL;
-    wheel_cmds_msg.layout.dim.size = 0;
-    wheel_cmds_msg.layout.dim.capacity = 0;
-    wheel_cmds_msg.layout.data_offset = 0;
 
-    encoder_feedback_msg.data.data = encoder_feedback_buffer;
-    encoder_feedback_msg.data.size = 4;
-    encoder_feedback_msg.data.capacity = 4;
-    encoder_feedback_msg.layout.dim.data = NULL;
-    encoder_feedback_msg.layout.dim.size = 0;
-    encoder_feedback_msg.layout.dim.capacity = 0;
-    encoder_feedback_msg.layout.data_offset = 0;
-
-    ret = rclc_executor_init(&executor, &support.context, 1, &allocator);
+    // --- Executor ---
+    // Note: Capacity increased to 3 to handle wheel_cmds, gripper, and arm!
+    ret = rclc_executor_init(&executor, &support.context, 3, &allocator);
     if (ret != RCL_RET_OK) return false;
 
     ret = rclc_executor_add_subscription(
-        &executor,
-        &wheel_cmds_subscriber,
-        &wheel_cmds_msg,
-        &wheel_cmds_callback,
-        ON_NEW_DATA);
+        &executor, &wheel_cmds_subscriber, &wheel_cmds_msg, &wheel_cmds_callback, ON_NEW_DATA);
+    if (ret != RCL_RET_OK) return false;
+
+    ret = rclc_executor_add_subscription(
+        &executor, &gripper_subscriber, &gripper_msg, &gripper_callback, ON_NEW_DATA);
+    if (ret != RCL_RET_OK) return false;
+
+    ret = rclc_executor_add_subscription(
+        &executor, &arm_subscriber, &arm_msg, &arm_callback, ON_NEW_DATA);
     if (ret != RCL_RET_OK) return false;
 
     return true;
@@ -250,55 +186,48 @@ bool createMicroRosEntities() {
 
 void microRosConnectionTask(void *pvprm) {
     (void)pvprm;
-
     while (true) {
         if (!micro_ros_connected) {
             if (rmw_uros_ping_agent(100, 1) == RMW_RET_OK) {
                 if (createMicroRosEntities()) {
                     micro_ros_connected = true;
-
-                    if (ros_executor_handle == NULL)xTaskCreate(rosExecutorTask, "ROS_Executor", 8192, NULL, 4, &ros_executor_handle);
-                    if (encoder_pub_handle == NULL)xTaskCreate(encoderPublisherTask, "Encoder_Publisher", 4096, NULL, 4, &encoder_pub_handle);
+                    if (ros_executor_handle == NULL) xTaskCreate(rosExecutorTask, "ROS_Executor", 8192, NULL, 4, &ros_executor_handle);
+                    if (encoder_pub_handle == NULL) xTaskCreate(encoderPublisherTask, "Encoder_Publisher", 4096, NULL, 4, &encoder_pub_handle);
                 }
             }
         }
-
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
+
 void setup() {
     Serial.begin(921600);
     delay(100);
 
+    // Servos
+    // Ensure ESP32 timers are allocated for PWM
+    ESP32PWM::allocateTimer(0);
+    ESP32PWM::allocateTimer(1);
+    
+    // Attach servos using the pins defined in config_wheels.h
+    // The default min/max pulse widths are typically 544/2400 for standard servos
+    gripper_servo.setPeriodHertz(50);
+    gripper_servo.attach(GRIPPER_PIN, 500, 2500); 
+    
+    arm_servo.setPeriodHertz(50);
+    arm_servo.attach(ARM_PIN, 500, 2500);
+
     // Motor pins
-    pinMode(BL_IN1, OUTPUT);
-    pinMode(BL_IN2, OUTPUT);
-    pinMode(BL_EN, OUTPUT);
-
-    pinMode(FL_IN1, OUTPUT);
-    pinMode(FL_IN2, OUTPUT);
-    pinMode(FL_EN, OUTPUT);
-
-    pinMode(BR_IN1, OUTPUT);
-    pinMode(BR_IN2, OUTPUT);
-    pinMode(BR_EN, OUTPUT);
-
-    pinMode(FR_IN1, OUTPUT);
-    pinMode(FR_IN2, OUTPUT);
-    pinMode(FR_EN, OUTPUT);
+    pinMode(BL_IN1, OUTPUT); pinMode(BL_IN2, OUTPUT); pinMode(BL_EN, OUTPUT);
+    pinMode(FL_IN1, OUTPUT); pinMode(FL_IN2, OUTPUT); pinMode(FL_EN, OUTPUT);
+    pinMode(BR_IN1, OUTPUT); pinMode(BR_IN2, OUTPUT); pinMode(BR_EN, OUTPUT);
+    pinMode(FR_IN1, OUTPUT); pinMode(FR_IN2, OUTPUT); pinMode(FR_EN, OUTPUT);
 
     // Encoder pins
-    pinMode(BL_ENC_A, INPUT_PULLUP);
-    pinMode(BL_ENC_B, INPUT_PULLUP);
-
-    pinMode(BR_ENC_A, INPUT_PULLUP);
-    pinMode(BR_ENC_B, INPUT_PULLUP);
-
-    pinMode(FL_ENC_A, INPUT_PULLUP);
-    pinMode(FL_ENC_B, INPUT_PULLUP);
-
-    pinMode(FR_ENC_A, INPUT_PULLUP);
-    pinMode(FR_ENC_B, INPUT_PULLUP);
+    pinMode(BL_ENC_A, INPUT_PULLUP); pinMode(BL_ENC_B, INPUT_PULLUP);
+    pinMode(BR_ENC_A, INPUT_PULLUP); pinMode(BR_ENC_B, INPUT_PULLUP);
+    pinMode(FL_ENC_A, INPUT_PULLUP); pinMode(FL_ENC_B, INPUT_PULLUP);
+    pinMode(FR_ENC_A, INPUT_PULLUP); pinMode(FR_ENC_B, INPUT_PULLUP);
 
     // Stop motors at startup
     setMotor(BL_EN, BL_IN1, BL_IN2, 0);
@@ -323,75 +252,19 @@ void setup() {
     BR_Motor.M_queue = BR_target_queue;
     FR_Motor.M_queue = FR_target_queue;
 
-    // Mutexes
-    targets_mutex = xSemaphoreCreateMutex();
-    encoder_mutex = xSemaphoreCreateMutex();
-    if (targets_mutex == NULL || encoder_mutex == NULL) {
-    while (true) {
-        delay(20);
-    }
-}
     // micro-ROS transport
     set_microros_serial_transports(Serial);
     allocator = rcl_get_default_allocator();
 
-    xTaskCreate(
-    microRosConnectionTask,
-    "MicroROS_Conn",
-    8192,
-    NULL,
-    2,
-    NULL
-    );
+    xTaskCreate(microRosConnectionTask, "MicroROS_Conn", 8192, NULL, 2, NULL);
+    
     // Create PID tasks
-    xTaskCreate(
-        apply_pid,
-        "BL_Task",
-        4096,
-        (void *)&BL_Motor,
-        4,
-        NULL
-    );
-
-    xTaskCreate(
-        apply_pid,
-        "FL_Task",
-        4096,
-        (void *)&FL_Motor,
-        4,
-        NULL
-    );
-
-    xTaskCreate(
-        apply_pid,
-        "BR_Task",
-        4096,
-        (void *)&BR_Motor,
-        4,
-        NULL
-    );
-
-    xTaskCreate(
-        apply_pid,
-        "FR_Task",
-        4096,
-        (void *)&FR_Motor,
-        4,
-        NULL
-    );
-
-    xTaskCreate(
-        startMotors,
-        "Start_Motors",
-        4096,
-        NULL,
-        4,
-        NULL
-    );
-
+    xTaskCreate(apply_pid, "BL_Task", 4096, (void *)&BL_Motor, 4, NULL);
+    xTaskCreate(apply_pid, "FL_Task", 4096, (void *)&FL_Motor, 4, NULL);
+    xTaskCreate(apply_pid, "BR_Task", 4096, (void *)&BR_Motor, 4, NULL);
+    xTaskCreate(apply_pid, "FR_Task", 4096, (void *)&FR_Motor, 4, NULL);
 }
 
 void loop() {
     vTaskDelay(pdMS_TO_TICKS(10));
 }
-

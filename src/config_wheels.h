@@ -1,6 +1,10 @@
 #ifndef _CONFIG_H_
 #define _CONFIG_H_
 
+// Servos
+#define GRIPPER_PIN 12
+#define ARM_PIN 13
+
 // BL = Back Left
 #define BL_IN1 7
 #define BL_IN2 15
