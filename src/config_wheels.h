@@ -1,6 +1,9 @@
 #ifndef _CONFIG_H_
 #define _CONFIG_H_
 
+//voltage divider for battery voltage measurement
+#define BATTERY_PIN 11
+
 // Servos
 #define GRIPPER_PIN 12
 #define ARM_PIN 13

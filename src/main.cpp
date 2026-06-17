@@ -12,13 +12,16 @@
 #include <std_msgs/msg/u_int8.h> // Added for servo topics
 #include <rosidl_runtime_c/primitives_sequence_functions.h>
 #include <rmw_microros/rmw_microros.h>
+#include <std_msgs/msg/float32.h>
 
 // --- ROS Entities ---
 rcl_subscription_t wheel_cmds_subscriber;
 rcl_subscription_t gripper_subscriber;
 rcl_subscription_t arm_subscriber;
 rcl_publisher_t encoder_feedback_publisher;
+rcl_publisher_t battery_publisher;
 
+std_msgs__msg__Float32 battery_msg;
 std_msgs__msg__Int16MultiArray wheel_cmds_msg;
 std_msgs__msg__Int16MultiArray encoder_feedback_msg;
 std_msgs__msg__UInt8 gripper_msg;
@@ -36,6 +39,7 @@ static int16_t encoder_feedback_buffer[4];
 // --- Task Handles ---
 TaskHandle_t ros_executor_handle = NULL;
 TaskHandle_t encoder_pub_handle = NULL;
+TaskHandle_t battery_pub_handle = NULL;
 
 // --- Motor & Servo Objects ---
 PIController pi_BL((Kp_BL), (Ki_BL), (Kd_BL), PWM_MIN, PWM_MAX);
@@ -86,6 +90,30 @@ void arm_callback(const void *msg_in) {
     // Constrain to safe servo angles
     int angle = constrain(msg->data, 0, 180);
     arm_servo.write(angle);
+}
+
+void batteryPublisherTask(void *pvprm) {
+    (void)pvprm;
+    TickType_t lastWakeTime = xTaskGetTickCount();
+    const TickType_t period = pdMS_TO_TICKS(1000); // Publish at 1 Hz
+
+    // Ensure 12-bit resolution (0-4095)
+    analogReadResolution(12);
+
+    while (true) {
+        // Read the raw ADC value
+        int raw_adc = analogRead(BATTERY_PIN);
+        
+        // Calculate voltage: (raw / max_resolution) * reference_voltage * external_multiplier
+        float voltage = (raw_adc / 4095.0f) * 3.3f * 5.0f + 1.0f;
+
+        battery_msg.data = voltage;
+
+        // Publish to micro-ROS
+        rcl_publish(&battery_publisher, &battery_msg, NULL);
+
+        vTaskDelayUntil(&lastWakeTime, period);
+    }
 }
 
 // --- Tasks ---
@@ -156,10 +184,17 @@ bool createMicroRosEntities() {
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int16MultiArray), "/encoder_feedback");
     if (ret != RCL_RET_OK) return false;
 
+    // --- Battery Publisher ---
+    ret = rclc_publisher_init_best_effort(
+        &battery_publisher, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "/battery_volt");
+    if (ret != RCL_RET_OK) return false;
+
     // --- Init Messages ---
     std_msgs__msg__Int16MultiArray__init(&wheel_cmds_msg);
     std_msgs__msg__Int16MultiArray__init(&encoder_feedback_msg);
-    
+    std_msgs__msg__Float32__init(&battery_msg);
+
     wheel_cmds_msg.data.data = wheel_cmds_buffer;
     wheel_cmds_msg.data.size = 0;
     wheel_cmds_msg.data.capacity = 4;
@@ -193,6 +228,8 @@ void microRosConnectionTask(void *pvprm) {
                     micro_ros_connected = true;
                     if (ros_executor_handle == NULL) xTaskCreate(rosExecutorTask, "ROS_Executor", 8192, NULL, 4, &ros_executor_handle);
                     if (encoder_pub_handle == NULL) xTaskCreate(encoderPublisherTask, "Encoder_Publisher", 4096, NULL, 4, &encoder_pub_handle);
+                    
+                    if (battery_pub_handle == NULL) xTaskCreate(batteryPublisherTask, "Battery_Publisher", 2048, NULL, 3, &battery_pub_handle);
                 }
             }
         }
@@ -208,6 +245,9 @@ void setup() {
     // Ensure ESP32 timers are allocated for PWM
     ESP32PWM::allocateTimer(0);
     ESP32PWM::allocateTimer(1);
+
+    //input pin for battery voltage measurement
+    pinMode(BATTERY_PIN, INPUT);
     
     // Attach servos using the pins defined in config_wheels.h
     // The default min/max pulse widths are typically 544/2400 for standard servos
