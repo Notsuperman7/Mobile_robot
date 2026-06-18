@@ -95,7 +95,7 @@ void arm_callback(const void *msg_in) {
 void batteryPublisherTask(void *pvprm) {
     (void)pvprm;
     TickType_t lastWakeTime = xTaskGetTickCount();
-    const TickType_t period = pdMS_TO_TICKS(1000); // Publish at 1 Hz
+    const TickType_t period = pdMS_TO_TICKS(10000); // Publish at 0.1 Hz
 
     // Ensure 12-bit resolution (0-4095)
     analogReadResolution(12);
